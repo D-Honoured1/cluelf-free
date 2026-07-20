@@ -1,3 +1,4 @@
+const DEBUG = false; // Set to false to disable debug logging
 const { app, BrowserWindow, ipcMain, globalShortcut, screen, session, desktopCapturer, shell } = require('electron');
 const path = require('path');
 const store = require('./src/store');
@@ -47,9 +48,13 @@ function createWindow() {
 
   // Invisibility + overlay behavior. Set CUE_NO_PROTECT=1 to disable for debugging.
   win.setContentProtection(!process.env.CUE_NO_PROTECT);            // excluded from screen capture (best-effort)
-  win.setAlwaysOnTop(true, 'screen-saver', 1);
-  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  if (typeof win.setHiddenInMissionControl === 'function') win.setHiddenInMissionControl(true);
+  if (process.platform === 'darwin') {
+    win.setAlwaysOnTop(true, 'screen-saver', 1);
+    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    if (typeof win.setHiddenInMissionControl === 'function') win.setHiddenInMissionControl(true);
+  } else {
+    win.setAlwaysOnTop(true);
+  }
 
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 
@@ -83,6 +88,7 @@ async function flushChannel(channel) {
     if (res.text && res.text.trim()) {
       const turn = { channel, text: res.text.trim(), ts: Date.now() };
       transcript.push(turn);
+      if (DEBUG) console.log(`[TRANSCRIPT] ${channel === 'you' ? 'You' : 'Them'}:`, turn.text);
       send('transcript', turn);
     }
   } catch (e) {
@@ -128,34 +134,49 @@ function setCapturing(active) {
 
 // -------- feature runner --------
 async function runFeature(mode, userText) {
+  if (DEBUG) console.log('[DEBUG MAIN] runFeature called:', { mode, userText, isBusy: state.busy });
   if (state.busy) return;
   const def = MODES[mode];
-  if (!def) return;
+  if (!def) {
+    if (DEBUG) console.log('[DEBUG MAIN] mode not found:', mode);
+    return;
+  }
   state.busy = true;
   try {
     const settings = store.getSettings();
     const llm = createLLM(settings);
     const userBubble = def.userBubble !== null ? def.userBubble : (mode === 'ask' ? userText : null);
+    if (DEBUG) console.log('[DEBUG MAIN] LLM settings loaded:', { provider: settings.provider, smart: settings.smart });
     send('llm:start', { userBubble, small: !!def.small });
 
     if (!llm.ready) {
+      if (DEBUG) console.log('[DEBUG MAIN] LLM not ready (missing key or model).');
       send('llm:error', { message: 'Add your ' + settings.provider + ' API key in Settings (gear icon) to start. Model: ' + (llm.model || 'unset') + '.' });
       return;
     }
 
     let imageDataUrl = null;
     if (def.needsScreen) {
-      try { imageDataUrl = await captureScreenshot(); }
-      catch (e) { send('status', { message: 'Screen capture needs permission — grant Screen Recording to cue in System Settings.' }); }
+      if (DEBUG) console.log('[DEBUG MAIN] Feature needs screen. Capturing screenshot...');
+      try { 
+        imageDataUrl = await captureScreenshot(); 
+        if (DEBUG) console.log('[DEBUG MAIN] Screenshot captured successfully (length:', imageDataUrl.length, ')');
+      }
+      catch (e) { 
+        if (DEBUG) console.error('[DEBUG MAIN] Screenshot capture failed:', e);
+        send('status', { message: 'Screen capture needs permission — grant Screen Recording to cue in System Settings.' }); 
+      }
     }
 
     const built = def.build({ transcript, userText: userText || '' });
-    await llm.stream({
+    if (DEBUG) console.log('[DEBUG MAIN] Built prompt. Starting LLM stream...');
+    const fullText = await llm.stream({
       system: def.system,
       turns: [{ role: 'user', text: built }],
       imageDataUrl,
       onToken: (t) => send('llm:token', { text: t })
     });
+    if (DEBUG) console.log('[DEBUG MAIN] Full LLM Output:\n', fullText);
     send('llm:done', {});
   } catch (e) {
     send('llm:error', { message: 'Error: ' + (e && e.message ? e.message : String(e)) });
