@@ -8,6 +8,8 @@ const FILE = path.join(app.getPath('userData'), 'cue-data.json');
 const DEFAULTS = {
   provider: 'openai',
   smart: false,
+  resumeContext: '',
+  shortcuts: { assist: 'CommandOrControl+Return' },
   apiKeys: { openai: '', anthropic: '', gemini: '', deepgram: '', nvidia: '' },
   models: {
     openai: { fast: 'gpt-4o-mini', smart: 'gpt-4o' },
